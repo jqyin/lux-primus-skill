@@ -42,7 +42,7 @@ No HF token is needed for the smoke test (Mistral-7B-v0.3 tokenizer is ungated, 
 | `  README.md` | The job's description for the agent: args and outputs. |
 | `  summarize.sh` | Extracts per-iteration metrics from the LAST rank's log lines. |
 | `  build_image.sh`, `build_helpers.sh` | Build the image (compute node only) and Megatron's `helpers_cpp`; used by setup and the job. |
-| `  *.yaml` | Experiment configs (top-level `modules:`) go to `$PRIMUS_DIR/examples/megatron/configs/MI355X/`, all others are model configs and go to `$PRIMUS_DIR/primus/configs/models/megatron/`, at job start. Flat, because VISTA uploads only the job folder's top-level files. |
+| `  *.yaml` | Experiment configs (top-level `modules:`) go to `$PRIMUS_DIR/examples/megatron/configs/MI355X/`, all others are model configs and go to `$PRIMUS_DIR/primus/configs/models/megatron/`, at job start. Kept flat because the job copies them with a `*.yaml` glob (VISTA uploads subfolders too). |
 | `env.lux.sh` | Site settings for running by hand. All values overridable via env before sourcing. |
 | `scripts/setup.sh`, `scripts/run_smoke.sh` | Hand-run wrappers: source env, run `setup_lux.sh` / submit `job.lux.slurm` with `-A $ACCOUNT` and the same resources. |
 | `lux-primus/` | Reference package for Mistral-Large-123B (image, runbook, scripts). Not required for the smoke test. |
@@ -75,16 +75,19 @@ a pure batch-size effect; the true 1->2 node cost at equal batch is ~14%.
 
 ## Running through VISTA
 
-`hpc_jobs/primus-smoke/` follows VISTA's HPC job format (`docs/hpc-jobs.md` in VISTA), so the agent can run it:
+`hpc_jobs/primus-smoke/` follows VISTA's HPC job format (`docs/hpc-jobs.md` in VISTA, "Self-contained HPC skills").
+When this skill is loaded in a VISTA project, the agent runs it as `primus-on-lux/primus-smoke`: the skill's name, then
+the job's. Nothing needs copying into VISTA's own `hpc_jobs/`.
 
 ```text
-submit_hpc_job(job="primus-smoke", cluster="lux", node_count=1)
-submit_hpc_job(job="primus-smoke", cluster="lux", node_count=2, script_args="GLOBAL_BATCH_SIZE=512")
+submit_hpc_job(job="primus-on-lux/primus-smoke", cluster="lux", node_count=1)
+submit_hpc_job(job="primus-on-lux/primus-smoke", cluster="lux", node_count=2, script_args="GLOBAL_BATCH_SIZE=512")
 get_hpc_job_status(job_id=<id>, cluster="lux")
 get_hpc_job_outputs(job_id=<id>, cluster="lux", files=["summary.txt"])
 ```
 
-VISTA uploads the folder's top-level files (the YAMLs and `summarize.sh`) to `$RUN_DIR_Lux` and runs `setup_lux.sh` on
+VISTA uploads the job folder's files, except its README, `cluster_defaults.json`, `job.lux.slurm` and `setup_lux.sh`
+(so the YAMLs and the build and summarize scripts), to `$RUN_DIR_Lux`, and runs `setup_lux.sh` on
 the login node before every `sbatch`. A missing image or a failed clone is therefore an error from the submit call,
 not a failed job. The Primus clone lives in VISTA's per-job shared folder (`$VISTA_JOB_DIR/Primus`), so only the
 first submission clones and builds. `cluster_defaults.json` sets `SIF` to the shared image; if it is unreadable, setup
@@ -127,7 +130,7 @@ Read `summary.txt` as in "Verified results": exit 0, 20/20 iterations, loss fall
 The smoke test uses the shared image `/lustre/orion/world-shared/stf218/junqi/primus/primus-v26.5.sif` (docker
 `rocm/primus:v26.5`; the reference package's `env.lux.sh` has its pinned digest). It is only read. If it is missing or unreadable, the job
 uses the user's own copy, `USER_SIF` (under VISTA, `images/` beside the job's uploaded sources in the user's own
-`<remote dir>.<user>.jobs/primus-smoke/`; by hand, `$PRIMUS_ROOT/images/`), and if that is missing too, builds it
+`<remote dir>.<user>.jobs/primus-on-lux/primus-smoke/`; by hand, `$PRIMUS_ROOT/images/`), and if that is missing too, builds it
 (`hpc_jobs/primus-smoke/build_image.sh`) on its first compute node before training: ~128 GB RAM, node-local
 `APPTAINER_TMPDIR`, ~26 min (a login-node build with tmpdir on Lustre did not finish in an hour). Give such a job at
 least 1 hour; with under 45 min left it stops at once with exit 3. The image is copied next to `$USER_SIF` and renamed into
