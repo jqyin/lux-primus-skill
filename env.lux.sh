@@ -11,7 +11,8 @@ export PARTITION=${PARTITION:-batch}
 export LUSTRE_ROOT=${LUSTRE_ROOT:-/lustre/orion}
 export PRIMUS_ROOT=${PRIMUS_ROOT:-$LUSTRE_ROOT/${ACCOUNT:-unknown}/scratch/$USER/lux-primus-skill}
 export PRIMUS_DIR=${PRIMUS_DIR:-$PRIMUS_ROOT/Primus}      # git clone (bind-mounted over /workspace/Primus)
-export SIF=${SIF:-$PRIMUS_ROOT/images/primus-v26.5.sif}   # 8.1 GB apptainer image
+export SIF=${SIF:-/lustre/orion/world-shared/stf218/junqi/primus/primus-v26.5.sif}   # shared 8.1 GB image, only read
+export USER_SIF=${USER_SIF:-$PRIMUS_ROOT/images/primus-v26.5.sif}   # your own, built by the job if the shared one is unreadable
 
 # Fabric (verified on Lux: bond0 = TCP bootstrap, 8x ionic RoCE for data).
 export PRIVATE_IFACE=${PRIVATE_IFACE:-bond0}

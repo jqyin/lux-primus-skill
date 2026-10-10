@@ -1,7 +1,7 @@
 # Mistral-7B-v0.3 (7.2B dense, ungated). Dimensions from the HF config.json.
 # Same shape as models/mistral_large_2411.yaml in the reference package: a
 # Llama-style decoder with GQA, so reuse llama_base and override.
-# Installed into primus/configs/models/megatron/ by submit_primus_smoke.sbatch.
+# Installed into primus/configs/models/megatron/ by job.lux.slurm (it has no top-level `modules:`).
 extends:
   - llama_base.yaml
 
