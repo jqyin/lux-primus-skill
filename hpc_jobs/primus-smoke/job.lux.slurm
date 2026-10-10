@@ -62,7 +62,10 @@ IFACE=${PRIVATE_IFACE:-bond0}
 NODE_TMP=/tmp/$USER/primus
 MASTER=$(srun -N1 -n1 -w "$FIRST" bash -c "ip -4 addr show $IFACE | grep -oP '(?<=inet )[0-9.]+'" | tail -1)
 export MASTER_ADDR=$MASTER MASTER_PORT=$(( 20000 + SLURM_JOB_ID % 20000 ))
-export CONFIG_NAME GLOBAL_BATCH_SIZE TRAIN_ITERS IFACE NODE_TMP SIF PRIMUS_DIR VISTA_OUT NNODES=$SLURM_JOB_NUM_NODES
+# Optional knobs are exported only when given. Apptainer passes the host environment into the container, so an
+# empty GLOBAL_BATCH_SIZE there replaces the YAML's ${GLOBAL_BATCH_SIZE:256} default with nothing.
+for v in GLOBAL_BATCH_SIZE TRAIN_ITERS; do if [ -n "${!v}" ]; then export "$v"; else unset "$v"; fi; done
+export CONFIG_NAME IFACE NODE_TMP SIF PRIMUS_DIR VISTA_OUT NNODES=$SLURM_JOB_NUM_NODES
 echo "job $SLURM_JOB_ID nodes=$NNODES master=$FIRST/$MASTER:$MASTER_PORT config=$CONFIG_NAME out=$VISTA_OUT"
 
 # --cpus-per-task=128 is mandatory: without it Slurm confines all 8 ranks to one CPU (~5x slower).
@@ -78,8 +81,8 @@ srun -N"$NNODES" -n"$NNODES" --ntasks-per-node=1 --cpus-per-task=128 bash -c '
   export APPTAINERENV_PYTHONPATH=/work/Primus:/work/Primus/third_party/Megatron-LM
   export APPTAINERENV_TRITON_CACHE_DIR=$NODE_TMP/triton APPTAINERENV_TORCHINDUCTOR_CACHE_DIR=$NODE_TMP/inductor
   export APPTAINERENV_PRIMUS_WORKSPACE=$VISTA_OUT/primus
-  [ -n "$GLOBAL_BATCH_SIZE" ] && export APPTAINERENV_GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE
-  [ -n "$TRAIN_ITERS" ] && export APPTAINERENV_TRAIN_ITERS=$TRAIN_ITERS
+  [ -n "${GLOBAL_BATCH_SIZE+x}" ] && export APPTAINERENV_GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE
+  [ -n "${TRAIN_ITERS+x}" ] && export APPTAINERENV_TRAIN_ITERS=$TRAIN_ITERS
   export APPTAINERENV_TORCH_EXTENSIONS_DIR=$NODE_TMP/torch_ext APPTAINERENV_HF_HOME=$NODE_TMP/hf APPTAINERENV_HF_HUB_DISABLE_XET=1
   export APPTAINERENV_http_proxy=$http_proxy APPTAINERENV_https_proxy=$https_proxy APPTAINERENV_no_proxy=$no_proxy
   exec apptainer exec --rocm --pwd /work/Primus \
