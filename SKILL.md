@@ -1,6 +1,6 @@
 ---
 name: primus-on-lux
-description: Run AMD Primus (Megatron backend) LLM training on OLCF Lux (MI355X, Slurm + apptainer). Use when asked to set up, smoke-test, scale, or debug Primus/Megatron training jobs on Lux, add a new model config, or interpret TFLOP/s/GPU results.
+description: Run AMD Primus (Megatron backend) LLM training on OLCF Lux (MI355X, Slurm + apptainer). Use when asked to set up, smoke-test, scale, or debug Primus/Megatron training jobs on Lux (a Mistral-7B smoke test, or full Mistral-Large-Instruct-2411 123B continued pretraining on Sci-Base and its export to Hugging Face format), add a new model config, or interpret TFLOP/s/GPU results.
 ---
 
 # Primus on OLCF Lux
@@ -21,6 +21,14 @@ scripts/setup.sh                   # once: clone Primus release/v26.5, pin Megat
 scripts/run_smoke.sh 1             # 1 node, Mistral-7B-v0.3, mock data, 20 iters (~3 min incl. startup)
 scripts/run_smoke.sh 2 GLOBAL_BATCH_SIZE=512     # 2 nodes, SAME per-GPU batch (gbs = 256 x nodes)
 cat runs/<jobid>/summary.txt      # first/3rd/last iteration + exit status (written by the job)
+```
+
+Full 123B model (Mistral-Large-Instruct-2411, FP8, TP1 x PP8, 90% Sci-Base + 10% chat mix, from the shared package):
+
+```bash
+scripts/setup_cpt.sh               # once: work dir $CPT_WORKDIR (patched Primus, tutorial scripts, JIT caches)
+scripts/run_cpt.sh 4               # 4 nodes, 4 steps from the base checkpoint (~10 min once running)
+scripts/export_cpt.sh <checkpoints dir> "<iters>"   # to HF safetensors for vLLM; see "Mistral-Large-123B"
 ```
 
 `run_smoke.sh` prints the job id, log path and output folder. Queue wait varies from seconds to many hours depending on
@@ -45,7 +53,9 @@ No HF token is needed for the smoke test (Mistral-7B-v0.3 tokenizer is ungated, 
 | `  *.yaml` | Experiment configs (top-level `modules:`) go to `$PRIMUS_DIR/examples/megatron/configs/MI355X/`, all others are model configs and go to `$PRIMUS_DIR/primus/configs/models/megatron/`, at job start. Kept flat because the job copies them with a `*.yaml` glob (VISTA uploads subfolders too). |
 | `env.lux.sh` | Site settings for running by hand. All values overridable via env before sourcing. |
 | `scripts/setup.sh`, `scripts/run_smoke.sh` | Hand-run wrappers: source env, run `setup_lux.sh` / submit `job.lux.slurm` with `-A $ACCOUNT` and the same resources. |
-| `lux-primus/` | Reference package for Mistral-Large-123B (image, runbook, scripts). Not required for the smoke test. |
+| `scripts/setup_cpt.sh`, `run_cpt.sh`, `export_cpt.sh` | The 123B path: wrappers around tutorial 3's tested scripts in `$PKG/tutorials/03_mistral_cpt/` (see "Mistral-Large-123B"). |
+| `LICENSE` | Apache-2.0, for this repo's own code (see "License and acknowledgments"). |
+| `lux-primus/` | The earlier upstream Mistral-Large package (runbook, scaling logs; git-ignored). Superseded by the 123B path. |
 | `runs/` | Job logs (git-ignored). |
 
 ## Verified results (Mistral-7B-v0.3, BF16, mock data, seq 2048, mbs 4, Turbo off)
@@ -136,14 +146,106 @@ uses the user's own copy, `USER_SIF` (under VISTA, `images/` beside the job's up
 least 1 hour; with under 45 min left it stops at once with exit 3. The image is copied next to `$USER_SIF` and renamed into
 place, so a concurrent reader never sees half an image. Set `PRIMUS_IMAGE=rocm/primus@sha256:<digest>` to pin the source.
 
-## Larger workloads (not covered by the smoke test)
+## Mistral-Large-123B continued pretraining
 
-Mistral-Large-123B (4+ nodes, FP8, checkpoint conversion, scaling study) is documented in
-`lux-primus/Primus_LM_v26.5_fix_4node_Mistral_large_123B/RUNBOOK.lux.md`. Its scripts hardcode account `ven136` and a
-`ven136` `PROJ`: override with `ACCOUNT=<acct> PROJ=<lustre path>` before `source env.lux.sh` there, set `SIF` afterwards, and
-submit with `sbatch -A <acct>`. It needs a HuggingFace token with access to the gated
-`mistralai/Mistral-Large-Instruct-2411` and ~1.6 TB of Lustre. **That path has not been run in this repo yet.**
+This is tutorial 3 of the Lux AI-for-Science hackathon, run from the shared read-only package
+`$PKG=/lustre/orion/world-shared/stf218/junqi/Genesis-Hackathon` (`env.lux.sh`). The package holds everything, so
+no HF token, download or checkpoint conversion is needed:
+
+| `$PKG/...` | |
+|---|---|
+| `containers/primus_v26.5.sif` | Primus v26.5, ROCm 7.15 (`CPT_SIF`). **Not** the smoke test's `SIF`: the 123B numbers were measured on this one. |
+| `models/mistral_large_megatron_tp1pp8/` | the base model as a Megatron TP1/PP8 checkpoint, where training starts (448 GB) |
+| `models/Mistral-Large-Instruct-2411/` | the base model in HF format: tokenizer, export reference (224 GB) |
+| `datasets/scibase_sciall_train/`, `scibase_sciallval_s200-208/` | Sci-Base in Megatron format: 34.07B training tokens, 1.34B held-out |
+| `datasets/chatmix_v7/` | 1.98M chat and tool-calling conversations in Mistral's v7 format (1.75B tokens) |
+| `tutorials/03_mistral_cpt/` | the tutorial's scripts (`lux/`), patched Primus (`primus/Primus.tar`), JIT caches, bad-node snapshot; its `README.md` is the full guide |
+
+`MANIFEST.sha256` in `$PKG` checksums all of it.
+
+**Setup** (`scripts/setup_cpt.sh [dir]`, once, ~2 min): makes `$CPT_WORKDIR` (default
+`/lustre/orion/<account>/scratch/$USER/mistral-cpt`, must be on `/lustre/orion`; containers mount it as `/work`).
+It holds the Primus tree, logs, Primus output and checkpoints, which are 224 GB each.
+
+**Train** (`scripts/run_cpt.sh [nodes] [KEY=VAL ...]`): sources the tutorial's `hackathon_env.sh` and
+`lux/lux_env.sh`, then submits `lux/train.sbatch` through `lux_sbatch` (account, `batch`, bad nodes excluded).
+The defaults are the tutorial's 4-node, 4-step run. The wrapper's own keys are `TIME` (`-t`, default `00:45:00`),
+`CHAT_SHARE` (default 0.1; 0 trains on Sci-Base only), `SAVE_INTERVAL` (adds `--save`) and `EXTRA_PRIMUS_ARGS`.
+Every other pair goes to `train.sbatch`, for example `TRAIN_ITERS`, `TRAIN_GBS` (512), `TRAIN_WARMUP`, `EPOCHS`,
+`RUN_NAME`, `LUX_GPU_CHECK=1`, `LUX_BW=1`, `GRAD_GUARD=0` or `LUX_EXCLUDE_EXTRA=luxNNN`.
+
+```bash
+scripts/run_cpt.sh 4                                             # tutorial smoke, 4 steps
+scripts/run_cpt.sh 4 TRAIN_ITERS=20 SAVE_INTERVAL=20 TIME=01:30:00 RUN_NAME=my-cpt   # keep a checkpoint to export
+scripts/run_cpt.sh 256 TRAIN_GBS=32768 TRAIN_ITERS=283 TRAIN_WARMUP=50 TRAIN_EVAL_INTERVAL=32 \
+  SAVE_INTERVAL=71 LUX_GPU_CHECK=1 TIME=04:45:00 RUN_NAME=chatmix-1ep       # reference: one epoch, ~3 h training
+```
+
+TP1 x PP8 puts one model copy on each node, so data parallelism equals the node count and micro-batch is 1. The
+global batch must divide by the node count, and the wrapper refuses one that doesn't. Runs have been measured at
+4 and 256 nodes; below 4 the wrapper warns, because each GPU holds a larger share of the optimizer state.
+
+`train.sbatch` first checks every node's 8 ionic rails, and with `LUX_GPU_CHECK=1` runs a 4-minute GPU arithmetic
+check. A bad node stops the job and is named in the log; resubmit with `LUX_EXCLUDE_EXTRA=<node>`. It then loads
+the 448 GB checkpoint from Lustre and trains. A grad-norm guard cancels a run whose gradient norm explodes (exit 3).
+
+Logs: `$CPT_WORKDIR/logs/train/slurm-<RUN_NAME>_<jobid>.out` holds the preflight and the job. The ranks' output is
+in `<RUN_NAME>_n<N>_j<jobid>_<date>.log` (`grep 'iteration .*/'` and `grep 'validation loss'`; it ends `=== exit
+<rc>`). Checkpoints go to `$CPT_WORKDIR/output/amd/root/<that log's name>/checkpoints/iter_NNNNNNN/`.
+
+Reference numbers (tutorial 3 README):
+
+| Run | Nodes | gbs | step | TFLOP/s/GPU |
+|---|---|---|---|---|
+| 4-step smoke (job 265721) | 4 | 512 | ~37 s | ~1,300 (1,342.8 / 1,299.8); val loss 1.422 at step 4; 7 min container start to exit |
+| Sci-Base only (job 227845, 1,206 steps) | 256 | 32,768 | 38.84 s | 1,283 (51% MFU); held-out loss best 1.1596 |
+
+Training loss jumps between steps because batches carry different amounts of chat. Read the validation loss
+instead.
+
+**Why the chat mix:** training on Sci-Base alone broke the instruct model as a chat model. Answers ran on, tool
+calls stopped, and the science suite fell from 0.651 to 0.295. Keep `CHAT_SHARE` above 0 for anything you mean to
+serve. The tutorial README, section 1, has the details.
+
+**Export and score:** `scripts/export_cpt.sh <checkpoints dir> "<iters>" [out]` runs `lux/export_hf.sbatch` on
+1 node (~1 h). It checks a bitwise round trip of the base model, shapes and dtypes, and held-out loss, and it
+fails if any check fails. Each `iter_NNNNNNN/` it writes can be served by vLLM: the `lux-vllm-skill` repo's
+`lux-inference/bench/mistral/mistral_bench.slurm.sh` with `ZENITH_MODELPATH=<out> ML_MODEL=iter_NNNNNNN` runs the
+correctness probe, tool check, GSM8K and the science suite. The base model scores 0.662 there (+-0.027), and a
+4-step run will not move that.
+
+**Verified from this repo** (job 308974, 2026-10-13, `scripts/run_cpt.sh 4 RUN_NAME=cpt-test`, lux297/300/301/303):
+4 nodes RAILS OK; exit 0 in 7 min 41 s of job time; steps 3 and 4 took 37.2 s and 38.4 s at 1,339.8 and 1,297.6
+TFLOP/s/GPU (reference 1,342.8 / 1,299.8). Loss 1.234 at step 1 shows the checkpoint loaded (a random model starts
+near 10). Final validation loss was 1.420 (reference 1.422). Steps 1 and 2 are slow (142 s and 90 s, JIT and warmup);
+ignore them. `export_cpt.sh` has only been dry-run.
 
 ## Verify after any change
 
 Run `scripts/run_smoke.sh 1`, then read `runs/<jobid>/summary.txt`; expect exit 0, 20/20 iterations, ~900+ TFLOP/s/GPU.
+
+## License and acknowledgments
+
+This skill is adapted from AMD's work. **Primus** (AMD-AGI/Primus) and the `rocm/primus` image are AMD's. The
+Mistral-Large-123B recipe is AMD's Mistral-Large MFU replication package, ported to Lux in the hackathon's
+tutorial 3: the FP8 config, TP1 x PP8 layout, Primus patch, launch, preflight and export scripts and every
+reference number. The Lux adaptation (this repo's job folder, wrappers, `env.lux.sh` and docs) was done at the
+Oak Ridge Leadership Computing Facility. Errors introduced by that adaptation are ours, not AMD's.
+
+This repo's own code is licensed under the Apache License 2.0 (`LICENSE`). Everything it runs or reads keeps its
+own terms:
+
+| Component | Licence |
+|---|---|
+| Primus (cloned by `setup_lux.sh`; `primus/Primus.tar` in `$PKG`) | MIT, Copyright (c) 2025 Advanced Micro Devices, Inc. (`Primus/LICENSE`) |
+| Megatron-LM (Primus submodule) | BSD-3-Clause style, Copyright (c) NVIDIA Corporation (`third_party/Megatron-LM/LICENSE`) |
+| Tutorial 3 scripts and replication package (`$PKG/tutorials/03_mistral_cpt/`) | AMD's terms for that package; copyright stays with AMD and its contributors |
+| `rocm/primus` image (ROCm, PyTorch, Transformer Engine, apex, aiter) | their upstream licences, inside the image |
+| `mistral_common` and its dependencies (`$PKG/tutorials/03_mistral_cpt/pylib/`) | Apache-2.0; pycountry LGPL-2.1; pydantic-extra-types MIT |
+| Mistral-7B-v0.3 tokenizer (smoke test) | Apache-2.0 |
+| Mistral-Large-Instruct-2411, its Megatron conversion and **any model trained from it** | Mistral Research Licence: research and non-commercial use only; derivatives carry the same licence |
+| Sci-Base (opendatalab/Sci-Base) | CC BY 4.0 |
+| chatmix_v7 sources | tulu-3-sft-mixture ODC-BY, smoltalk Apache-2.0, hermes-function-calling-v1 Apache-2.0 |
+
+Scoring an export uses GPQA Diamond, whose authors ask that the questions not be posted online. Do not publish
+`science*.json` results; aggregate scores are fine.
