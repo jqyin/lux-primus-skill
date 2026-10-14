@@ -43,7 +43,8 @@ No HF token is needed for the smoke test (Mistral-7B-v0.3 tokenizer is ungated, 
 
 | Path | Purpose |
 |---|---|
-| `hpc_jobs/primus-smoke/` | **Everything that runs on Lux**, as a VISTA HPC job (see "Running through VISTA"). The hand-run scripts below use the same files. |
+| `hpc_jobs/mistral-cpt/` | The 123B continued pretraining as a VISTA HPC job: `job.lux.slurm` runs tutorial 3's `lux/train.sbatch` in VISTA's allocation, `setup_lux.sh` makes the work dir once, `summarize_cpt.sh` writes `summary.txt`. |
+| `hpc_jobs/primus-smoke/` | **The smoke test**, as a VISTA HPC job (see "Running through VISTA"). The hand-run scripts below use the same files. |
 | `  setup_lux.sh` | Login node, idempotent: clone Primus `release/v26.5`, pin Megatron (`d3528a2`), build `helpers_cpp` in the image (Python 3.12 ABI). Refuses to touch an existing non-git directory. |
 | `  job.lux.slurm` | Launcher: apptainer, torchrun, `bond0` master IP, node-local JIT caches; node count from `-N`. Takes `KEY=VALUE` args, writes `train.log` and `summary.txt` to `$VISTA_OUT`. No `#SBATCH` lines. |
 | `  cluster_defaults.json` | Resources (1 node, 8 GPUs, exclusive, `batch`, 30 min) and env overrides such as `SIF`. |
@@ -53,7 +54,7 @@ No HF token is needed for the smoke test (Mistral-7B-v0.3 tokenizer is ungated, 
 | `  *.yaml` | Experiment configs (top-level `modules:`) go to `$PRIMUS_DIR/examples/megatron/configs/MI355X/`, all others are model configs and go to `$PRIMUS_DIR/primus/configs/models/megatron/`, at job start. Kept flat because the job copies them with a `*.yaml` glob (VISTA uploads subfolders too). |
 | `env.lux.sh` | Site settings for running by hand. All values overridable via env before sourcing. |
 | `scripts/setup.sh`, `scripts/run_smoke.sh` | Hand-run wrappers: source env, run `setup_lux.sh` / submit `job.lux.slurm` with `-A $ACCOUNT` and the same resources. |
-| `scripts/setup_cpt.sh`, `run_cpt.sh`, `export_cpt.sh` | The 123B path: wrappers around tutorial 3's tested scripts in `$PKG/tutorials/03_mistral_cpt/` (see "Mistral-Large-123B"). |
+| `scripts/setup_cpt.sh`, `run_cpt.sh`, `export_cpt.sh` | The 123B path by hand: wrappers around tutorial 3's tested scripts in `$PKG/tutorials/03_mistral_cpt/` (see "Mistral-Large-123B"). `run_cpt.sh` accepts any `train.sbatch` knob and excludes bad nodes; the VISTA job takes a fixed list. |
 | `LICENSE` | Apache-2.0, for this repo's own code (see "License and acknowledgments"). |
 | `lux-primus/` | The earlier upstream Mistral-Large package (runbook, scaling logs; git-ignored). Superseded by the 123B path. |
 | `runs/` | Job logs (git-ignored). |
@@ -87,13 +88,20 @@ a pure batch-size effect; the true 1->2 node cost at equal batch is ~14%.
 
 `hpc_jobs/primus-smoke/` follows VISTA's HPC job format (`docs/hpc-jobs.md` in VISTA, "Self-contained HPC skills").
 When this skill is loaded in a VISTA project, the agent runs it as `primus-on-lux/primus-smoke`: the skill's name, then
-the job's. Nothing needs copying into VISTA's own `hpc_jobs/`.
+the job's. Nothing needs copying into VISTA's own `hpc_jobs/`. The skill has two jobs: `primus-smoke` (Mistral-7B,
+mock data) and `mistral-cpt` (Mistral-Large-123B continued pretraining; see "Mistral-Large-123B"). Exporting a
+checkpoint to Hugging Face format is not a VISTA job yet: `scripts/export_cpt.sh` runs by hand.
 
 ```text
 submit_hpc_job(job="primus-on-lux/primus-smoke", cluster="lux", node_count=1)
 submit_hpc_job(job="primus-on-lux/primus-smoke", cluster="lux", node_count=2, script_args="GLOBAL_BATCH_SIZE=512")
 get_hpc_job_status(job_id=<id>, cluster="lux")
 get_hpc_job_outputs(job_id=<id>, cluster="lux", files=["summary.txt"])
+
+submit_hpc_job(job="primus-on-lux/mistral-cpt", cluster="lux")                                   # 4 nodes, the tutorial's 4 steps
+submit_hpc_job(job="primus-on-lux/mistral-cpt", cluster="lux", script_args="TRAIN_ITERS=10")
+submit_hpc_job(job="primus-on-lux/mistral-cpt", cluster="lux", node_count=8, duration="1:30:00",
+               script_args="TRAIN_ITERS=20 TRAIN_GBS=1024 SAVE_INTERVAL=20 RUN_NAME=my-cpt")
 ```
 
 VISTA uploads the job folder's files, except its README, `cluster_defaults.json`, `job.lux.slurm` and `setup_lux.sh`
@@ -103,7 +111,16 @@ not a failed job. The Primus clone lives in VISTA's per-job shared folder (`$VIS
 first submission clones and builds. `cluster_defaults.json` sets `SIF` to the shared image; if it is unreadable, setup
 checks only that the user's own image folder is writable, and the job builds the user's own image (see "Image"). Only the `KEY=VALUE` args in the job's README are accepted.
 
-Read `summary.txt` as in "Verified results": exit 0, 20/20 iterations, loss falling.
+Read the smoke test's `summary.txt` as in "Verified results": exit 0, 20/20 iterations, loss falling.
+
+`mistral-cpt` accepts `TRAIN_ITERS`, `TRAIN_GBS`, `TRAIN_WARMUP`, `TRAIN_EVAL_INTERVAL`, `TRAIN_EVAL_ITERS`,
+`CHAT_SHARE`, `SAVE_INTERVAL`, `LUX_GPU_CHECK` and `RUN_NAME` (its README has the defaults). Defaults: 4 nodes, 45
+min (VISTA allows at most 4 h, so size `TRAIN_ITERS` to fit: ~10 min of loading, then ~38 s per step at gbs 512 on 4
+nodes). Its setup copies the tutorial's work dir into `$VISTA_JOB_DIR/work` once (~2 min on the first submission);
+every run shares it, and checkpoints (224 GB each) are written there, at the path `summary.txt` gives. Its
+`summary.txt` lists the rails preflight, every iteration (step time, TFLOP/s/GPU, loss, grad norm), the
+validation losses and `VERDICT: OK`; compare with the reference table under "Mistral-Large-123B". Unlike by hand,
+VISTA cannot exclude nodes: a node that fails the rails check is named in `summary.txt`; tell the user and resubmit.
 
 ## Gotchas (each cost real time)
 
@@ -219,6 +236,11 @@ correctness probe, tool check, GSM8K and the science suite. The base model score
 TFLOP/s/GPU (reference 1,342.8 / 1,299.8). Loss 1.234 at step 1 shows the checkpoint loaded (a random model starts
 near 10). Final validation loss was 1.420 (reference 1.422). Steps 1 and 2 are slow (142 s and 90 s, JIT and warmup);
 ignore them. `export_cpt.sh` has only been dry-run.
+
+**Verified through VISTA's submission path** (job 316703, 2026-10-13, `primus-on-lux/mistral-cpt` with
+`script_args="TRAIN_ITERS=10"`, VISTA's `#SBATCH` header on stdin, uploaded sources only, lux417/433/438/447): setup
+made the work dir in 3 min on the first submission; 4 nodes RAILS OK; exit 0 in 11 min 14 s of job time. Iterations
+3-10: 38.2-38.4 s, 1,296.7-1,303.6 TFLOP/s/GPU (mean ~1,301); loss 1.212 at step 1; validation loss 1.271 at step 10.
 
 ## Verify after any change
 
